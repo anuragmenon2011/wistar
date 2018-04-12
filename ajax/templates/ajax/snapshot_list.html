@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Wistar - Lab Rat - Snapshot List{% endblock %}
+{% load staticfiles %}
+{% block content %}
+<div class="centered_box_75">
+
+<h2>Stack Snapshot List</h2>
+<ul class="messages">
+    {% for message in messages %}
+    <li {% if message.tags %} class="{{ message.tags }}"{% endif %}>{{ message }}</li>
+    {% endfor %}
+</ul>
+<table>
+    <tr>
+        <th>Name</th>
+        <th>Snapshot Id</th>
+        <th>Stack Name</th>
+        <th>Options</th>
+    </tr>
+    {% for snapshot in snapshot_list %}
+    <tr>
+        <td>
+           {{snapshot.name }}
+        </td>
+        <td>
+            {{ snapshot.id }}
+        </td>
+        <td>
+            {{ snapshot.stack_name }}
+        </td>
+        <td style="width: 100px;">
+            <div id="menu_{{ snapshot.id }}" style="position: absolute; margin-top: -6px;">
+                <img src="{% static 'images/more.png' %}" width="12px" height="12px"/>&nbsp;
+                <ul class="submenu">
+
+                    <li>
+                        <a href="#" onclick="javascript: redir('/ajax/rollbackSnapshot/{{ snapshot.id }}/{{snapshot.topology_id}}')">Rollback</a>
+                    </li>
+                    <li>
+                        <a href="#" onclick="javascript: redir('/ajax/deleteSnapshot/{{ snapshot.id }}/{{snapshot.topology_id}}')">Delete</a>
+                    </li>
+
+                </ul>
+            </div>
+            <script>
+                jQuery("#menu_{{ snapshot.id }}").hover(
+                    function() {
+                        $(this).children('.submenu').slideDown(150);
+                    },
+                    function() {
+                        $(this).children('.submenu').slideUp(150);
+                    }
+                );
+            </script>
+        </td>
+    </tr>
+    {% endfor %}
+</table>
+
+</div>
+{% endblock %}

@@ -1,14 +1,22 @@
 {% load staticfiles %}
+
+
 <script type="text/javascript">
-{% if stack == None %}
-is_deployed = false;
-{% else %}
-is_deployed = true;
-{% endif %}
+
+
+
+ function showSnapSetEditor() {
+        manuallyTogglePanel('createSnapDet', '');
+    }
 </script>
+
+
+
+
+
 <table>
     <tr>
-        <th colspan="3"> Stack Status</th>
+        <th colspan="4"> Stack Status</th>
     </tr>
     {% if stack == None %}
     <tr>
@@ -27,82 +35,142 @@ is_deployed = true;
         </td>
     </tr>
     {% else %}
-        {% if 'COMPLETE' not in stack.stack_status %}
+        {% if stack.stack_status != "CREATE_COMPLETE" %}
         <tr>
             <td>
                 Status
             </td>
-            <td>
+            <td colspan="3">
                 {{ stack.stack_status }}
             </td>
+
         </tr>
         <tr>
             <td>
                 Status Detail
             </td>
-            <td>
+            <td colspan="3">
                 {{ stack.stack_status_reason }}
             </td>
+
+
+
+
+
+
         </tr>
         {% else %}
             {% for resource in stack_resources.resources %}
             {% if resource.resource_type == "OS::Nova::Server" %}
             <tr>
+
                 <td>
                      <a title="View in Horizon"
                         href="#"
-                        onclick="javascript: window.open('{{ openstack_horizon_url }}/project/instances/{{ resource.physical_resource_id }}')">
+                        onclick="javascript: window.open('http://{{ openstack_host }}/dashboard/project/instances/{{ resource.physical_resource_id }}')">
                         {{ resource.resource_name }}
                      </a>
                 </td>
-                <td colspan="2" style="white-space: nowrap;">
-                        {% if 'COMPLETE' in resource.resource_status %}
-                        <div class="status_green">&#10003;</div>
-                        &nbsp;
+                <td>
+                    Status
+                </td>
+                <td>
+                    &nbsp;
+                </td>
+                <td style="white-space: nowrap;">
+                        {% if resource.resource_status == "CREATE_COMPLETE" %}
+                        <img src="{% static 'images/running.png' %}" width="20px" height="20px"/>&nbsp;
                         <a href="#"
-                            onclick="javascript: window.open('{{ openstack_horizon_url }}/project/instances/{{ resource.physical_resource_id }}/?tab=instance_details__console');"
+                            onclick="javascript: window.open('http://{{ openstack_host }}/dashboard/project/instances/{{ resource.physical_resource_id }}/?tab=instance_details__console');"
                             title="Launch Console"
                             >
                             <img src="{% static 'images/console.png' %}" width="20px" height="20px"/>
                         </a>
                         {% else %}
-                        <div class="status_red">&#9661;</div>
-                        &nbsp;
+                        <img src="{% static 'images/stopped.png' %}" width="20px" height="20px"/>
                         {% endif %}
                 </td>
             </tr>
             {% endif %}
             {% endfor %}
         {% endif %}
+    <!--
         <tr>
             <td>
-                Options
+                Resources
             </td>
-            <td colspan="2">
-                <div class="status_grey">
-                    <a href="#"
-                        onclick="javascript: window.open('{{ openstack_horizon_url }}/project/stacks/stack/{{ stack.id }}/')"
-                        title="View in Horizon">&#128269;</a>
-                </div>
-                &nbsp;
-                <div class="status_red">
-                    <a href="#" onclick="javascript: redir('/ajax/deleteStack/{{ topology_id }}')"
-                       title="Delete Stack">&#10005;</a>
-                </div>
-                &nbsp;
-                <div class="status_grey">
-                    <a href="#" onclick="javascript: redir('/topologies/exportHeat/{{ topology_id }}')"
-                        title="Show HEAT">&#9881;</a>
-                </div>
-                &nbsp;
+            <td>
+                {{ stack_resources }}
+            </td>
+        </tr>
+    -->
+        <tr>
+            <th colspan="4">
+                Options
+            </th>
+        </tr>
+
+        <tr>
+            <td>
+                <a href="#"
+                   onclick="javascript: window.open('http://{{ openstack_host }}/dashboard/project/stacks/stack/{{ stack.id }}/')">
+                    View in Horizon
+                </a>
+            </td>
+
+            <td>
+                <a href="#" onclick="javascript: redir('/ajax/deleteStack/{{ topology_id }}')">
+                    Delete Stack
+                </a>
+            </td>
+
+            <td>
+                <a href="#" onclick="javascript: redir('/topologies/exportHeat/{{ topology_id }}')">
+                    Debug HEAT
+                </a>
+            </td>
+
+            <td>
+                <a href="#" onclick="javascript: redir('/ajax/updateStack/{{ topology_id }}')">
+                    Update HEAT
+                </a>
             </td>
         </tr>
         <tr>
-            <td colspan="3">
+            <td colspan="4">
                 <input type="button" name="refreshDSButton" id="refreshDSButton"
                        value="Refresh OpenStack Status"
                        onclick="javascript: refreshDeploymentStatus('{{ topology_id }}');"/>
             </td>
         </tr>
+        <tr>
+            <th colspan="4">
+                HEAT Snapshots
+            </th>
+        </tr>
+        <tr>
+            <td colspan ="2">
+                 <a href="javascript:void(0)" onclick="javascript: showSnapSetEditor();">
+                    Create Snapshots
+                 </a>
+            </td>
+
+            <td colspan="2">
+                <a href="#" onclick="javascript: redir('/ajax/listSnapshot/{{ topology_id }}')">
+                    List Snapshots
+                </a>
+            </td>
+        </tr>
+
+
+
+
+
+
+
+
+
+
     {% endif %}
 </table>
+
