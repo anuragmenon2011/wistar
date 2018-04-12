@@ -33,7 +33,6 @@ from ajax import views as av
 from common.lib import junosUtils
 from common.lib import libvirtUtils
 from common.lib import osUtils
-from common.lib import ovsUtils
 from common.lib import wistarUtils
 from common.lib import openstackUtils
 
@@ -68,22 +67,19 @@ def edit(request):
 
 def new(request):
     logger.debug('---- topology new ----')
-
+    image_list = Image.objects.all().order_by('name')
     script_list = Script.objects.all().order_by('name')
     vm_types = configuration.vm_image_types
     vm_types_string = json.dumps(vm_types)
+    image_list_json = serializers.serialize('json', Image.objects.all(), fields=('name', 'type'))
 
     currently_allocated_ips = wistarUtils.get_used_ips()
-    dhcp_reservations = wistarUtils.get_consumed_management_ips()
+    dhcp_reservations = wistarUtils.get_dhcp_reserved_ips()
 
     if configuration.deployment_backend == "openstack":
         external_bridge = configuration.openstack_external_network
-        image_list = Image.objects.filter(filePath='').order_by('name')
     else:
         external_bridge = configuration.kvm_external_bridge
-        image_list = Image.objects.exclude(filePath='').order_by('name')
-
-    image_list_json = serializers.serialize('json', image_list, fields=('name', 'type'))
 
     context = {'image_list': image_list, 'script_list': script_list, 'vm_types': vm_types_string,
                'image_list_json': image_list_json,
@@ -130,7 +126,7 @@ def import_topology(request):
             logger.debug("Iterating json objects in imported data")
             for json_object in json_data:
                 if "userData" in json_object and "wistarVm" in json_object["userData"]:
-                    # logger.debug("Found one")
+                    logger.debug("Found one")
                     ud = json_object["userData"]
                     # check if we have this type of image
                     image_list = Image.objects.filter(type=ud["type"])
@@ -141,7 +137,7 @@ def import_topology(request):
                                      '! Please upload an image of this type and try again')
 
                     image = image_list[0]
-                    # logger.debug(str(image.id))
+                    logger.debug(str(image.id))
                     json_object["userData"]["image"] = image.id
 
                     valid_ip = wistarUtils.get_next_ip(currently_allocated_ips, next_ip_floor)
@@ -161,14 +157,11 @@ def import_topology(request):
             vm_types = configuration.vm_image_types
             vm_types_string = json.dumps(vm_types)
 
-            dhcp_reservations = wistarUtils.get_consumed_management_ips()
-
             context = {'image_list': image_list,
                        'image_list_json': image_list_json,
                        'allocated_ips': currently_allocated_ips,
                        'script_list': script_list,
                        'vm_types': vm_types_string,
-                       'dhcp_reservations': dhcp_reservations,
                        'topo': topology
                        }
 
@@ -202,7 +195,7 @@ def clone(request, topo_id):
     currently_allocated_ips = wistarUtils.get_used_ips()
     cloned_ips = wistarUtils.get_used_ips_from_topology_json(topology.json)
 
-    dhcp_reservations = wistarUtils.get_consumed_management_ips()
+    dhcp_reservations = wistarUtils.get_dhcp_reserved_ips()
 
     currently_allocated_ips += cloned_ips
 
@@ -280,18 +273,10 @@ def delete(request, topology_id):
 
     if configuration.deployment_backend == "kvm":
 
-        if hasattr(configuration, "use_openvswitch") and configuration.use_openvswitch:
-            use_ovs = True
-        else:
-            use_ovs = False
-
         network_list = libvirtUtils.get_networks_for_topology(topology_prefix)
         for network in network_list:
             logger.debug("undefine network: " + network["name"])
             libvirtUtils.undefine_network(network["name"])
-
-            if use_ovs:
-                ovsUtils.delete_bridge(network["name"])
 
         domain_list = libvirtUtils.get_domains_for_topology(topology_prefix)
         for domain in domain_list:
@@ -486,7 +471,7 @@ def add_instance_form(request):
     image_list_json = serializers.serialize('json', Image.objects.all(), fields=('name', 'type'))
 
     currently_allocated_ips = wistarUtils.get_used_ips()
-    dhcp_reservations = wistarUtils.get_consumed_management_ips()
+    dhcp_reservations = wistarUtils.get_dhcp_reserved_ips()
 
     if configuration.deployment_backend == "openstack":
         external_bridge = configuration.openstack_external_network
@@ -502,3 +487,124 @@ def add_instance_form(request):
                'dhcp_reservations': dhcp_reservations,
                }
     return render(request, 'topologies/overlay/add_instance.html', context)
+
+
+def rebuild_instance(request):
+    logger.info('---------rebuild instance--------')
+    required_fields = set(['instance_name'])
+    if not required_fields.issubset(request.POST):
+        return render(request, 'ajax/overlayError.html', {'error': "Invalid Parameters in POST"})
+
+    instance_name = request.POST['instance_name']
+    topo_id = request.POST['topology_id']
+    try:
+        image_list_linux = list()
+        image_list = Image.objects.all().order_by('name')
+        for i in image_list:
+            if not (i.type.startswith('junos')):
+
+                image_list_linux.append(i)
+
+        vm_types = configuration.vm_image_types
+        vm_types_string = json.dumps(vm_types)
+        logger.debug(vm_types_string)
+
+        image_list_json = serializers.serialize('json', Image.objects.all(), fields=('name', 'type'))
+        logger.debug(image_list_json)
+
+        search_string = 't%s_%s' % (topo_id, instance_name)
+        logger.debug(search_string)
+        if openstackUtils.connect_to_openstack():
+            server_id = openstackUtils.get_server_details(search_string)
+        context = {'image_list': image_list_linux,
+                   'instance_name': instance_name,
+                   'vm_types': vm_types_string,
+                   'image_list_json': image_list_json,
+                   'server_id': server_id,
+                   'topo_id': topo_id
+                   }
+        return render(request, 'topologies/overlay/rebuild_instance.html', context)
+    except Exception as e:
+        logger.debug("Caught Exception in deploy")
+        logger.debug(str(e))
+        return render(request, 'error.html', {'error': str(e)})
+
+
+def rebuild_server(request):
+
+    try:
+        logger.debug("Inside the rebuild method")
+        required_fields = set(['topoIconImageSelect', 'topo_id', 'server_id'])
+        if not required_fields.issubset(request.POST):
+            return render(request, 'ajax/overlayError.html', {'error': "Invalid Parameters in POST"})
+        topology_id = request.POST["topo_id"]
+        server_id = request.POST["server_id"]
+        image_string = request.POST["topoIconImageSelect"].split(":")[2]
+        if openstackUtils.connect_to_openstack():
+            image_id = openstackUtils.get_image_id_for_name(image_string)
+
+        logger.debug("Parameters %s %s %s" % (server_id, topology_id, image_id))
+
+        if openstackUtils.connect_to_openstack():
+            res = openstackUtils.rebuild_instance_openstack(server_id, image_id)
+
+        logger.debug("----------------Response----------------")
+
+        if res is None:
+            return render(request, 'error.html', {'error': "Not able to rebuild the server"})
+        else:
+            return HttpResponseRedirect('/topologies/' + topology_id + '/')
+
+    except Exception as e:
+        logger.debug("Caught Exception in deploy")
+        logger.debug(str(e))
+        return render(request, 'error.html', {'error': str(e)})
+
+
+
+
+def create_snapshot_topo(request):
+    
+
+    """
+        :param request: Django request
+        :param topology_id: id of the topology to export
+        :param snap_name: id of the topology to export
+        :return: creates a snapshot of the heat template
+    """
+    try:
+        logger.debug("Inside create Snapshot----------")
+        tenant_id = openstackUtils.get_project_id(configuration.openstack_project)
+        logger.debug("using tenant_id of: %s" % tenant_id)
+        if tenant_id is None:
+            raise Exception("No project found for %s" % configuration.openstack_project)
+        logger.debug(request.POST)
+        required_fields = set(['snap_name', 'snapshot_topo_id'])
+        if not required_fields.issubset(request.POST):
+            return render(request, 'ajax/ajaxError.html', {'error': "Invalid Parameters in POST"})
+
+        topology_id = request.POST["snapshot_topo_id"]
+        snap_name = request.POST["snap_name"]
+        logger.debug("using tenant_id of: %s" % tenant_id)
+        logger.debug("Topology id -------------------: %s" % topology_id)
+        logger.debug("Snap name -------------------: %s" % snap_name)
+
+        try:
+            topology = Topology.objects.get(pk=topology_id)
+        except ObjectDoesNotExist:
+            logger.error('topology id %s was not found!' % topology_id)
+            return render(request, 'error.html', {'error': "Topology not found!"})
+
+        # FIXME - verify all images are in glance before jumping off here!
+        stack_name = topology.name.replace(' ', '_')
+        
+        logger.debug("-------------------stack_name--------------------: %s" % stack_name)
+        if openstackUtils.connect_to_openstack():
+            logger.debug(openstackUtils.create_stack_snapshot(stack_name, tenant_id, snap_name))
+
+        return HttpResponseRedirect('/topologies/' + topology_id + '/')
+
+    except Exception as e:
+        logger.debug("Caught Exception in deploy")
+        logger.debug(str(e))
+        return render(request, 'error.html', {'error': str(e)})
