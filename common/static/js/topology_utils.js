@@ -67,14 +67,6 @@ function setImageType() {
     }
 }
 
-
-
-
-
-
-
-
-
 function addIconAndClose() {
     rv = addIcon();
     if (rv == true) {

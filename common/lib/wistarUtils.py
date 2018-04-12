@@ -19,6 +19,7 @@
 
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -75,26 +76,28 @@ def _generate_mac(topology_id):
     """
     silly attempt to keep mac addresses unique
     use the topology id to generate 2 octets, and the number of
-    macs used so far to generate the last one
-    :param topology_id: id of the topology we are building
+    macs used so far to generate the last two octets.
+    Uses the locally administered address ranges 52:54:00 through 52:54:FF
+    :param topology_id: string id of the topology we are building
     :return: mostly unique mac address that should be safe to deploy
     """
+    tid = int(topology_id)
     global mac_counter
     global used_macs
-    b1 = "52:54:"
-    b2 = '%02x' % int(len(used_macs[topology_id]) / 256)
-    base = b1 + str(b2) + ":"
-    tid = "%04x" % int(topology_id)
-    mac_base = base + str(tid[:2]) + ":" + str(tid[2:4]) + ":"
-    mac = mac_base + (str("%02x" % mac_counter)[:2])
+    base = '52:54:00:00:00:00'
+    ba = base.split(':')
+    ba[2] = '%02x' % int(tid / 256)
+    ba[3] = '%02x' % int(tid % 256)
+    ba[4] = '%02x' % int(len(used_macs[topology_id]) / 256)
+    ba[5] = '%02x' % int(mac_counter)
 
     mac_counter += 1
 
     mac_counter = mac_counter % 256
-    return mac
+    return ':'.join(ba)
 
 
-def get_heat_json_from_topology_config(config):
+def get_heat_json_from_topology_config(config, project_name='admin'):
     """
     Generates heat template from the topology configuration object
     use load_config_from_topology_json to get the configuration from the Topology
@@ -119,10 +122,11 @@ def get_heat_json_from_topology_config(config):
 
         nrs = dict()
         nrs["type"] = "OS::Neutron::Subnet"
-
+        #
         p = dict()
         p["cidr"] = "1.1.1.0/24"
         p["enable_dhcp"] = False
+        p["gateway_ip"] = ""
         p["name"] = network["name"] + "_subnet"
         if network["name"] == "virbr0":
             p["network_id"] = configuration.openstack_mgmt_network
@@ -149,10 +153,21 @@ def get_heat_json_from_topology_config(config):
             image_details_dict[device["imageId"]] = image_details
 
         image_name = image_details["name"]
-        if "disk" in image_details:
-            image_disk = image_details["disk"]
-        else:
-            image_disk = 20
+
+        image_disk_size = 20
+
+        # set the size in GB, rounding up to the nearest int
+        if 'size' in image_details:
+            current_size = int(image_details['size'])
+            image_disk_size = int(math.ceil(current_size / 100000000))
+
+        # if the flavor asks for a minimum disk size, let's see if it's larger that what we have
+        if "min_disk" in image_details and image_details['min_disk'] > image_disk_size:
+            image_disk_size = image_details["min_disk"]
+
+        # if the user has specified a desired disk size, grab it here so we get the correct flavor
+        if type(image_disk_size) is int and device["resizeImage"] > image_disk_size:
+            image_disk_size = device["resizeImage"]
 
         # determine openstack flavor here
         device_ram = int(device["ram"])
@@ -161,7 +176,7 @@ def get_heat_json_from_topology_config(config):
         flavor_detail = openstackUtils.get_minimum_flavor_for_specs(configuration.openstack_project,
                                                                     device_cpu,
                                                                     device_ram,
-                                                                    image_disk
+                                                                    image_disk_size
                                                                     )
 
         flavor = flavor_detail["name"]
@@ -196,6 +211,7 @@ def get_heat_json_from_topology_config(config):
             for cfp in device["configDriveParams"]:
 
                 if "destination" in cfp and cfp["destination"] == "/boot/loader.conf":
+                    logger.debug("Creating loader.conf config-drive entry")
                     template_name = cfp["template"]
                     loader_string = osUtils.compile_config_drive_params_template(template_name,
                                                                                  device["name"],
@@ -204,12 +220,17 @@ def get_heat_json_from_topology_config(config):
                                                                                  device["ip"],
                                                                                  device["managementInterface"])
 
-                    for l in loader_string:
-                        left, right = l.split('=')
-                        if left not in metadata:
-                            metadata[left] = right
+                    logger.debug('----------')
+                    logger.debug(loader_string)
+                    logger.debug('----------')
+                    for l in loader_string.split('\n'):
+                        if '=' in l:
+                            left, right = l.split('=')
+                            if left not in metadata and left != '':
+                                metadata[left] = right.replace('"', '')
 
                 if "destination" in cfp and cfp["destination"] == "/juniper.conf":
+                    logger.debug("Creating juniper.conf config-drive entry")
                     template_name = cfp["template"]
                     personality_string = osUtils.compile_config_drive_params_template(template_name,
                                                                                       device["name"],
@@ -220,6 +241,43 @@ def get_heat_json_from_topology_config(config):
 
                     dr["properties"]["personality"] = dict()
                     dr["properties"]["personality"] = {"/config/juniper.conf": personality_string}
+                else:
+                    logger.debug('No juniper.conf found here ')
+
+        if device['cloudInitSupport']:
+            logger.debug('creating cloud-init script')
+            dr["properties"]["config_drive"] = True
+            dr["properties"]["user_data_format"] = "RAW"
+            metadata = dict()
+            metadata["hostname"] = device["name"]
+            dr["properties"]["metadata"] = metadata
+            # grab the prefix len from the management subnet which is in the form 192.168.122.0/24
+            if '/' in configuration.management_subnet:
+                management_prefix_len = configuration.management_subnet.split('/')[1]
+            else:
+                management_prefix_len = '24'
+
+            management_ip = device['ip'] + '/' + management_prefix_len
+
+            device_config = osUtils.get_cloud_init_config(device['name'],
+                                                          device['label'],
+                                                          management_ip,
+                                                          device['managementInterface'],
+                                                          device['password'])
+
+            script_string = ""
+            if "configScriptId" in device and device["configScriptId"] != 0:
+                logger.debug("Passing script data!")
+                try:
+                    script = Script.objects.get(pk=int(device["configScriptId"]))
+                    script_string = script.script
+                    device_config["script_param"] = device.get("configScriptParam", '')
+                    logger.debug(script_string)
+                except ObjectDoesNotExist:
+                    logger.info('config script was specified but was not found!')
+
+            user_data_string = osUtils.render_cloud_init_user_data(device_config, script_string)
+            dr["properties"]["user_data"] = user_data_string
 
         template["resources"][device["name"]] = dr
 
@@ -232,186 +290,25 @@ def get_heat_json_from_topology_config(config):
 
             if port["bridge"] == "virbr0":
                 p["network_id"] = configuration.openstack_mgmt_network
+
+                # specify our desired IP address on the management interface
+                p['fixed_ips'] = list()
+                fip = dict()
+                fip['ip_address'] = device['ip']
+                p['fixed_ips'].append(fip)
+
             elif port["bridge"] == configuration.openstack_external_network:
                 p["network_id"] = configuration.openstack_external_network
             else:
                 p["network_id"] = {"get_resource": port["bridge"]}
-            p["name"] = device["name"] + "_port" + str(index)
+                # disable port security on all other ports (in case this isn't set globally)
+                p['port_security_enabled'] = False
 
             pr["properties"] = p
             template["resources"][device["name"] + "_port" + str(index)] = pr
             index += 1
 
     return json.dumps(template)
-
-
-
-
-
-
-
-
-def get_heat_json_from_topology_config_for_update(config, port_list):
-    """
-    Generates heat template from the topology configuration object
-    use load_config_from_topology_json to get the configuration from the Topology
-    :param config: configuration dict from load_config_from_topology_json
-    :return: json encoded heat template as String
-    """
-
-    template = dict()
-    template["heat_template_version"] = "2013-05-23"
-    template["resources"] = dict()
-
-    for network in config["networks"]:
-        nr = dict()
-        nr["type"] = "OS::Neutron::Net"
-
-        nrp = dict()
-        nrp["shared"] = False
-        nrp["name"] = network["name"]
-        nrp["admin_state_up"] = True
-
-        nr["properties"] = nrp
-
-        nrs = dict()
-        nrs["type"] = "OS::Neutron::Subnet"
-
-        p = dict()
-        p["cidr"] = "1.1.1.0/24"
-        p["enable_dhcp"] = False
-        p["name"] = network["name"] + "_subnet"
-        if network["name"] == "virbr0":
-            p["network_id"] = configuration.openstack_mgmt_network
-        elif network["name"] == configuration.openstack_external_network:
-            p["network_id"] = configuration.openstack_external_network
-        else:
-            p["network_id"] = {"get_resource": network["name"]}
-
-        nrs["properties"] = p
-
-        template["resources"][network["name"]] = nr
-        template["resources"][network["name"] + "_subnet"] = nrs
-
-    # cache the image_details here to avoid multiple REST calls for details about an image type
-    # as many topologies have lots of the same types of images around
-    image_details_dict = dict()
-
-    for device in config["devices"]:
-
-        if device["imageId"] in image_details_dict:
-            image_details = image_details_dict[device["imageId"]]
-        else:
-            image_details = imageUtils.get_image_detail(device["imageId"])
-            image_details_dict[device["imageId"]] = image_details
-
-        image_name = image_details["name"]
-        if "disk" in image_details:
-            image_disk = image_details["disk"]
-        else:
-            image_disk = 20
-
-        # determine openstack flavor here
-        device_ram = int(device["ram"])
-        device_cpu = int(device["cpu"])
-
-        flavor_detail = openstackUtils.get_minimum_flavor_for_specs(configuration.openstack_project,
-                                                                    device_cpu,
-                                                                    device_ram,
-                                                                    image_disk
-                                                                    )
-
-        flavor = flavor_detail["name"]
-
-        dr = dict()
-        dr["type"] = "OS::Nova::Server"
-        dr["properties"] = dict()
-        dr["properties"]["flavor"] = flavor
-        dr["properties"]["networks"] = []
-        index = 0
-        for p in device["interfaces"]:
-            port = dict()
-            port["port"] = dict()
-            if device["name"] + "_port" + str(index) in port_list:
-                port["port"]["get_resource"] = device["name"] + "_port" + str(index) + "_nora"
-            else:
-                port["port"]["get_resource"] = device["name"] + "_port" + str(index)
-            index += 1
-            dr["properties"]["networks"].append(port)
-
-        dr["properties"]["image"] = image_name
-        dr["properties"]["name"] = device["name"]
-
-        if device["configDriveSupport"]:
-            dr["properties"]["config_drive"] = True
-            dr["properties"]["user_data_format"] = "RAW"
-            metadata = dict()
-            metadata["hostname"] = device["name"]
-            metadata["console"] = "vidconsole"
-            dr["properties"]["metadata"] = metadata
-
-            # let's check all the configDriveParams and look for a junos config
-            # FIXME - this may need tweaked if we need to include config drive cloud-init support for other platforms
-            # right now we just need to ignore /boot/loader.conf
-            for cfp in device["configDriveParams"]:
-
-                if "destination" in cfp and cfp["destination"] == "/boot/loader.conf":
-                    template_name = cfp["template"]
-                    loader_string = osUtils.compile_config_drive_params_template(template_name,
-                                                                                 device["name"],
-                                                                                 device["label"],
-                                                                                 device["password"],
-                                                                                 device["ip"],
-                                                                                 device["managementInterface"])
-
-                    for l in loader_string:
-                        left, right = l.split('=')
-                        if left not in metadata:
-                            metadata[left] = right
-
-                if "destination" in cfp and cfp["destination"] == "/juniper.conf":
-                    template_name = cfp["template"]
-                    personality_string = osUtils.compile_config_drive_params_template(template_name,
-                                                                                      device["name"],
-                                                                                      device["label"],
-                                                                                      device["password"],
-                                                                                      device["ip"],
-                                                                                      device["managementInterface"])
-
-                    dr["properties"]["personality"] = dict()
-                    dr["properties"]["personality"] = {"/config/juniper.conf": personality_string}
-
-        template["resources"][device["name"]] = dr
-
-    for device in config["devices"]:
-        index = 0
-        for port in device["interfaces"]:
-            pr = dict()
-            pr["type"] = "OS::Neutron::Port"
-            p = dict()
-
-            if port["bridge"] == "virbr0":
-                p["network_id"] = configuration.openstack_mgmt_network
-            elif port["bridge"] == configuration.openstack_external_network:
-                p["network_id"] = configuration.openstack_external_network
-            else:
-                p["network_id"] = {"get_resource": port["bridge"]}
-            if device["name"] + "_port" + str(index) in port_list:
-                p["name"] = device["name"] + "_port" + str(index) + "_nora"
-            else:
-                p["name"] = device["name"] + "_port" + str(index)
-
-            pr["properties"] = p
-
-            if device["name"] + "_port" + str(index) in port_list:
-                template["resources"][device["name"] + "_port" + str(index) + "_nora"] = pr
-            else:
-                template["resources"][device["name"] + "_port" + str(index)] = pr
-            index += 1
-
-    return json.dumps(template)
-
-
 
 
 def _get_management_macs_for_topology(topology_id):
@@ -447,7 +344,10 @@ def load_config_from_topology_json(topology_json, topology_id):
 
     # preload all the existing management mac addresses if any
     global used_macs
-    used_macs[topology_id] = _get_management_macs_for_topology(topology_id)
+    if configuration.deployment_backend == "kvm":
+        used_macs[topology_id] = _get_management_macs_for_topology(topology_id)
+    else:
+        used_macs[topology_id] = list()
 
     json_data = json.loads(topology_json)
 
@@ -467,8 +367,7 @@ def load_config_from_topology_json(topology_json, topology_id):
 
     # has this topology already been deployed?
     is_deployed = False
-    existing_macs = _get_management_macs_for_topology(topology_id)
-    if len(existing_macs) > 0:
+    if len(used_macs[topology_id]) > 0:
         # yep, already been deployed
         is_deployed = True
 
@@ -554,15 +453,18 @@ def load_config_from_topology_json(topology_json, topology_id):
             device["uuid"] = json_object.get('id', '')
             device["interfaces"] = []
 
-            # determine next available VNC port that has not currently been assigned
-            next_vnc_port = libvirtUtils.get_next_domain_vnc_port(device_index)
-
-            # verify that this port is not actually in use by another process
-            while osUtils.check_port_in_use(next_vnc_port):
-                device_index += 1
+            device['vncPort'] = 0
+            if configuration.deployment_backend == "kvm":
+                # determine next available VNC port that has not currently been assigned
                 next_vnc_port = libvirtUtils.get_next_domain_vnc_port(device_index)
 
-            device["vncPort"] = next_vnc_port
+                # verify that this port is not actually in use by another process
+                while osUtils.check_port_in_use(next_vnc_port):
+                    device_index += 1
+                    next_vnc_port = libvirtUtils.get_next_domain_vnc_port(device_index)
+
+                device["vncPort"] = next_vnc_port
+
             # is this a child VM?
             # children will *always* have a parent attribute set in their userdata
             parent_id = user_data.get("parent", "")
@@ -605,7 +507,10 @@ def load_config_from_topology_json(topology_json, topology_id):
                 # management interface mi will always be connected to default management network (virbr0 on KVM)
                 mi = dict()
 
-                if is_deployed and libvirtUtils.domain_exists(device['name']):
+                # slight optimization for kvm backend, dont generate new mac
+                if configuration.deployment_backend == "kvm" and \
+                        is_deployed and \
+                        libvirtUtils.domain_exists(device['name']):
                     mi['mac'] = libvirtUtils.get_management_interface_mac_for_domain(device['name'])
                 else:
                     mi['mac'] = generate_next_mac(topology_id)
@@ -784,7 +689,9 @@ def load_config_from_topology_json(topology_json, topology_id):
         if d["mgmtInterfaceIndex"] == -1:
             mi = dict()
             # if this has already been deployed, let's preserve the existing mac address that has been assigned
-            if is_deployed and libvirtUtils.domain_exists(device['name']):
+            if configuration.deployment_backend == "kvm" and \
+                    is_deployed and \
+                    libvirtUtils.domain_exists(device['name']):
                 mi['mac'] = libvirtUtils.get_management_interface_mac_for_domain(device['name'])
             else:
                 mi['mac'] = generate_next_mac(topology_id)
@@ -993,7 +900,7 @@ def get_used_ips():
                 # logger.info(last_octet)
                 all_ips.append(int(last_octet))
 
-    dhcp_leases = get_dhcp_reserved_ips()
+    dhcp_leases = get_consumed_management_ips()
     all_ips.extend(dhcp_leases)
 
     logger.debug("sorting and returning all_ips")
@@ -1001,23 +908,32 @@ def get_used_ips():
     return all_ips
 
 
-def get_dhcp_reserved_ips():
-    # pull current ips out of dhcp reservations and leases files
-    # return as a single list
+def get_consumed_management_ips():
+    """
+    Return a list of all ip addresses that are currently consumed on the wistar management network
+    THIS ASSUMES A /24 for THE MANAGEMENT NETWORK!
+    :return: a list of ints representing the last octet of the /24 management network
+    """
     all_ips = list()
 
-    # let's also grab current dhcp leases as well
-    dhcp_leases = osUtils.get_dhcp_leases()
+    # let's also grab consumed management ips as well
+    if configuration.deployment_backend == "openstack":
+        if openstackUtils.connect_to_openstack():
+            dhcp_leases = openstackUtils.get_consumed_management_ips()
+        else:
+            return all_ips
+    else:
+        dhcp_leases = osUtils.get_dhcp_leases()
+        # let's also grab current dhcp reservations
+        dhcp_reservations = osUtils.get_dhcp_reservations()
+        for dr in dhcp_reservations:
+            ip = str(dr["ip-address"])
+            last_octet = ip.split('.')[-1]
+            all_ips.append(int(last_octet))
+
     for lease in dhcp_leases:
         ip = str(lease["ip-address"])
         logger.debug("adding active lease %s" % ip)
-        last_octet = ip.split('.')[-1]
-        all_ips.append(int(last_octet))
-
-    # let's also grab current dhcp reservations
-    dhcp_leases = osUtils.get_dhcp_reservations()
-    for lease in dhcp_leases:
-        ip = str(lease["ip-address"])
         last_octet = ip.split('.')[-1]
         all_ips.append(int(last_octet))
 

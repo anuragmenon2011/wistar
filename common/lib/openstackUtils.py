@@ -27,7 +27,7 @@ from urllib2 import URLError
 from wistar import configuration
 
 # OpenStack component URLs
-_glance_url = ':9292'
+# _glance_url = ':9292/v1'
 _analytics_url = ':8081'
 _api_url = ':8082'
 _os_url = ':5000/v3'
@@ -62,6 +62,21 @@ def connect_to_openstack():
     """
 
     logger.debug("--- connect_to_openstack ---")
+
+    logger.debug('verify configuration')
+
+    if not hasattr(configuration, 'openstack_host'):
+        logger.error('Openstack Host is not configured')
+        return False
+
+    if not hasattr(configuration, 'openstack_user'):
+        logger.error('Openstack User is not configured')
+        return False
+
+    if not hasattr(configuration, 'openstack_password'):
+        logger.error('Openstack Password is not configured')
+        return False
+
     global _auth_token
     global _tenant_id
     global _token_cache_time
@@ -203,7 +218,38 @@ def get_project_id(project_name):
     return None
 
 
-def upload_image_to_glance(name, image_file_path):
+def get_network_id(network_name):
+    """
+    Gets the UUID of the network by network_name
+    :param network_name: Name of the network
+    :return: string UUID or None
+    """
+
+    logger.debug("--- get_network_id ---")
+
+    networks_url = create_neutron_url('/networks?name=%s' % network_name)
+    logger.info(networks_url)
+    networks_string = do_get(networks_url)
+    logger.info(networks_string)
+    if networks_string is None:
+        logger.error('Did not find a network for that name!')
+        return None
+
+    try:
+        networks = json.loads(networks_string)
+    except ValueError:
+        logger.error('Could not parse json response in get_network_id')
+        return None
+
+    for network in networks["networks"]:
+        if network["name"] == network_name:
+            logger.info('Found id!')
+            return str(network["id"])
+
+    return None
+
+
+def upload_image_to_glance_old(name, image_file_path):
     """
 
     :param name: name of the image to be uploaded
@@ -239,18 +285,144 @@ def upload_image_to_glance(name, image_file_path):
         return None
 
 
+def upload_image_to_glance(name, image_file_path):
+    """
+
+    :param name: name of the image to be created
+    :param image_file_path: path of the file to upload
+    :return: json encoded results string from glance REST api
+    """
+    logger.debug("--- create_image_in_glance ---")
+
+    url = create_glance_url('/images')
+
+    try:
+
+        d = dict()
+        d['disk_format'] = 'qcow2'
+        d['container_format'] = 'bare'
+        d['name'] = name
+
+        r_data = do_post(url, json.dumps(d))
+
+    except Exception as e:
+        logger.error("Could not upload image to glance")
+        logger.error("error was %s" % str(e))
+        return None
+
+    try:
+        r_json = json.loads(r_data)
+        if 'id' in r_json:
+            image_id = r_json['id']
+
+            logger.info('Preparing to push image data to glance!')
+            f = open(image_file_path, 'rb')
+            fio = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+            upload_url = create_glance_url('/images/%s/file' % image_id)
+            request = urllib2.Request(upload_url, fio)
+            request.add_header("Content-Type", "application/octet-stream")
+            request.add_header("X-Auth-Token", _auth_token)
+            request.get_method = lambda: 'PUT'
+            return urllib2.urlopen(request)
+        else:
+            logger.error('Could not find an ID key in returned json from glance image create')
+            logger.error(r_data)
+            logger.error('returning None')
+            return None
+
+    except ValueError:
+        logger.error('Could not parse JSON return data from glance image create')
+        return None
+
+
+def get_neutron_ports_for_network(network_name):
+    """
+    :return: json response from /ports URL
+    """
+    logger.debug("--- get_neutron_port_list ---")
+
+    network_id = get_network_id(network_name)
+    if network_id is None:
+        logger.warn("couldn't find the correct network_id")
+        return None
+
+    url = create_neutron_url("/ports.json?network_id=%s&fields=id&fields=fixed_ips" % network_id)
+    logger.debug(url)
+    port_list_string = do_get(url)
+    logger.debug(port_list_string)
+
+    return port_list_string
+
+
+def get_consumed_management_ips():
+    """
+    Return a list of dicts of the format
+    [
+        { "ip-address": "xxx.xxx.xxx.xxx"}
+    ]
+    This mimics the libvirt dnsmasq format for dhcp reservations
+    This is used in the wistarUtils.get_dhcp_reserved_ips() as a single place to
+    get all reserved management ips
+    :return: list of dicts
+    """
+    consumed_ips = list()
+    ports_string = get_neutron_ports_for_network(configuration.openstack_mgmt_network)
+    if ports_string is None:
+        return consumed_ips
+    try:
+        ports = json.loads(ports_string)
+    except ValueError:
+        logger.error('Could not parse json response in get_consumed_management_ips')
+        return consumed_ips
+
+    if 'ports' not in ports:
+        logger.error('unexpected keys in json response!')
+        return consumed_ips
+
+    for port in ports['ports']:
+        for fixed_ip in port['fixed_ips']:
+            if configuration.management_prefix in fixed_ip['ip_address']:
+                fip = dict()
+                fip['ip-address'] = fixed_ip['ip_address']
+                consumed_ips.append(fip)
+
+    return consumed_ips
+
+
 def get_glance_image_list():
     """
-    :return: json response from glance /images/ URL
+    :return: list of json objects from glance /images URL filtered with only shared or public images
     """
     logger.debug("--- get_glance_image_list ---")
 
     url = create_glance_url("/images")
     image_list_string = do_get(url)
-    if image_list_string is None:
-        return None
 
-    image_list = json.loads(image_list_string)
+    image_list = list()
+
+    if image_list_string is None:
+        return image_list
+
+    try:
+        glance_return = json.loads(image_list_string)
+    except ValueError:
+        logger.warn('Could not parse json response from glance /images')
+        return image_list
+
+    if 'images' not in glance_return:
+        logger.warn('did not find images key in glance return data')
+        logger.debug(glance_return)
+        return image_list
+
+    for im in glance_return['images']:
+
+        if 'status' in im and im['status'] != 'active':
+            logger.debug('Skipping non-active image %s' % im['name'])
+            continue
+
+        if 'visibility' in im and im['visibility'] in ['shared', 'public']:
+            image_list.append(im)
+
     return image_list
 
 
@@ -278,10 +450,10 @@ def get_image_id_for_name(image_name):
     logger.debug("--- get_image_id_for_name ---")
 
     image_list = get_glance_image_list()
-    if image_list is None:
+    if image_list is None or len(image_list) == 0:
         return None
 
-    for image in image_list["images"]:
+    for image in image_list:
         if image["name"] == image_name:
             return image["id"]
 
@@ -354,10 +526,32 @@ def get_nova_flavors(project_name):
 
 
 def get_minimum_flavor_for_specs(project_name, cpu, ram, disk):
+    """
+    Query nova to get all flavors and return the flavor that best matches our desired constraints
+    :param project_name: name of the project to check for flavors
+    :param cpu: number of cores desired
+    :param ram:  amount of ram desired in MB
+    :param disk: amount of disk required in GB
+    :return: flavor object {"name": "m1.xlarge"}
+    """
 
     logger.debug("checking: " + str(cpu) + " " + str(ram) + " " + str(disk))
+
+    # create an emergency flavor so we have something to return in case we can't connect to openstack
+    # or some other issue prevents us from determining the right thing to do
+    emergency_flavor = dict()
+    emergency_flavor['name'] = "m1.xlarge"
+
+    if not connect_to_openstack():
+        return emergency_flavor
+
     flavors = get_nova_flavors(project_name)
-    flavors_object = json.loads(flavors)
+    try:
+        flavors_object = json.loads(flavors)
+    except ValueError:
+        logger.error('Could not parse nova return data')
+        return emergency_flavor
+
     cpu_candidates = list()
     ram_candidates = list()
     disk_candidates = list()
@@ -395,7 +589,7 @@ def get_minimum_flavor_for_specs(project_name, cpu, ram, disk):
 
         if len(disk_candidates) == 0:
             # uh-oh, just return the largest and hope for the best!
-            return "m1.xlarge"
+            return emergency_flavor
         elif len(disk_candidates) == 1:
             return disk_candidates[0]
         else:
@@ -403,7 +597,7 @@ def get_minimum_flavor_for_specs(project_name, cpu, ram, disk):
             # let's find the smallest flavor left!
             cpu_low = 99
             disk_low = 999
-            ram_low = 9999
+            ram_low = 99999
             for f in disk_candidates:
                 if f["vcpus"] < cpu_low:
                     cpu_low = f["vcpus"]
@@ -452,209 +646,6 @@ def create_stack(stack_name, template_string):
     logger.debug("Creating stack with data:")
     logger.debug(data)
     return do_post(url, data)
-
-
-
-def create_stack_snapshot(stack_name, tenant_id, snapshot_name):
-    """
-        Creates a snapshot of the Stack via a HEAT REST call
-        :param stack_name: name of the stack to create
-        :param tenant_id: tenant id of the openstack project
-        :param snapshot_name: name of the snapshot
-        :return: JSON response from HEAT-API or None on failure
-    """
-    logger.debug("In create stack snapshot--------------")
-    stack_details = get_stack_details(stack_name)
-    if stack_details is None:
-        return None
-    else:
-        stack_id = str(stack_details["id"])
-
-    #stack_id = get_stack_details(stack_name)
-    create_snapshot_url = create_heat_url("/" + str(tenant_id) + "/stacks/%s/%s/snapshots" % (stack_name, stack_id))
-    data = """{
-            "name": "%s"
-        }""" % snapshot_name
-    logger.debug("Data before posting-----------")
-    logger.debug(data)
-
-    return do_post(create_snapshot_url, data)
-
-
-
-def get_snapshot_list(tenant_id, stack_name, topology_id):
-
-    print("In snapshot list")
-
-    stack_details = get_stack_details(stack_name)
-    if stack_details is None:
-        return None
-    else:
-        stack_id = str(stack_details["id"])
-    snapshot_list_url = create_heat_url('/%s/stacks/%s/%s/snapshots' % (tenant_id, stack_name, stack_id))
-    stack_snapshot_list = do_get(snapshot_list_url)
-    l1 = json.loads(stack_snapshot_list)
-    #l2 = l1['snapshots']
-    snap_list = list()
-
-    for snap in l1["snapshots"]:
-        if snap["status"] == "COMPLETE":
-            snap_detail = get_snap_detail(snap, stack_name, topology_id)
-            snap_list.append(snap_detail)
-    logger.debug(snap_list)
-    return snap_list
-
-def get_snap_detail(snap, stack_name, topology_id):
-
-    logger.debug("Getting snapshot details-------------")
-    logger.debug(snap)
-    snap_list = dict()
-    snap_list["name"] = snap["name"]
-    snap_list["id"] = snap["id"]
-    snap_list["stack_name"] = stack_name
-    snap_list["topology_id"] = str(topology_id)
-
-    return snap_list
-
-def get_server_details(search_string):
-    server_details_url = create_nova_url('/servers?name=%s' % search_string)
-    server_details_json = do_get(server_details_url)
-    server_details_dict = json.loads(server_details_json)
-
-    if server_details_dict is None:
-        return None
-    else:
-        server_details_list = list()
-        server_details_list = server_details_dict['servers']
-        for det in server_details_list:
-            server_details = det['id']
-        logger.debug(server_details)
-        return server_details
-
-
-
-
-def delete_snapshot(tenant_id, stack_name, snapshot_id):
-    """
-    Deletes a stack from OpenStack
-    :param stack_name: name of the stack to be deleted
-    :return: JSON response fro HEAT API
-    """
-    logger.debug("--- delete_stack_snapshot ---")
-
-    stack_details = get_stack_details(stack_name)
-    if stack_details is None:
-        return None
-    else:
-        stack_id = stack_details["id"]
-        url = create_heat_url("/%s/stacks/%s/%s/snapshots/%s" % (tenant_id, stack_name, stack_id, snapshot_id))
-        return do_delete(url)
-
-
-
-def rollback_snapshot(tenant_id, stack_name, snapshot_id):
-    """
-    Deletes a stack from OpenStack
-    :param stack_name: name of the stack to be deleted
-    :return: JSON response fro HEAT API
-    """
-    logger.debug("--- delete_stack_snapshot ---")
-    data = ""
-    stack_details = get_stack_details(stack_name)
-    if stack_details is None:
-        return None
-    else:
-        stack_id = stack_details["id"]
-        url = create_heat_url("/%s/stacks/%s/%s/snapshots/%s/restore" % (tenant_id, stack_name, stack_id, snapshot_id))
-        return do_post(url, data)
-
-
-
-def rebuild_instance_openstack(server_id, image_id):
-    logger.debug("-------Rebuild server openstack")
-    url = create_nova_url("/servers/%s/action" % server_id)
-    data = '''{
-        "rebuild" : {
-            "imageRef" : "%s"
-        }
-    }''' % str(image_id)
-
-    return do_post(url, data)
-
-
-
-
-def update_stack_template(stack_name, template_string):
-
-    """
-    Creates a Stack via a HEAT template
-    :param stack_name: name of the stack to create
-    :param template_string: HEAT template to be used
-    :return: JSON response from HEAT-API or None on failure
-    """
-    logger.debug("--- update_stack ---")
-    stack_details = get_stack_details(stack_name)
-    if stack_details is None:
-        return None
-    else:
-        stack_id = stack_details["id"]
-
-    url = create_heat_url("/" + str(_tenant_id) + "/stacks/%s/%s" % (stack_name, stack_id))
-    logger.debug("URL to update stack")
-    logger.debug(url)
-    data = '''{
-        "disable_rollback": true,
-        "parameters": {},
-        "template": %s
-    }''' % (template_string)
-    logger.debug("updating CREATING stack with data:")
-    logger.debug(data)
-    try:
-        request = urllib2.Request(url)
-        request.add_header("Content-Type", "application/json")
-        request.add_header("charset", "UTF-8")
-        request.add_header("X-Auth-Token", _auth_token)
-        request.get_method = lambda: 'PATCH'
-
-        if data == "":
-            result = urllib2.urlopen(request)
-        else:
-            result = urllib2.urlopen(request, data)
-
-        return result.read()
-    except URLError as e:
-        logger.error("Could not perform PUT to url: %s" % url)
-        logger.error("error was %s" % str(e))
-        return None
-    #return do_post(url, data)
-
-
-
-
-def get_stack_ports(stack_name, tenant_id):
-    stack_details = get_stack_details(stack_name)
-
-    if stack_details is None:
-        return None
-    else:
-        stack_id = str(stack_details["id"])
-
-    try:
-        get_port_url = create_heat_url( '/%s/stacks/%s/%s/resources?type=OS::Neutron::Port' % (tenant_id, stack_name, stack_id))
-        resources = do_get(get_port_url)
-        resource_dict = json.loads(resources)
-        resource_list = resource_dict['resources']
-        print(resource_list)
-        port_list = list()
-        for port in resource_list:
-            port_list.append(port['resource_name'])
-        print(port_list)
-        return port_list
-
-    except URLError as e:
-        logger.error("Could not perform PUT to url: %s" % url)
-        logger.error("error was %s" % str(e))
-        return None
 
 
 def get_nova_serial_console(instance_name):
@@ -712,6 +703,10 @@ def get_nova_serial_console(instance_name):
 # URL Utility functions
 def create_glance_url(url):
     return "http://" + configuration.openstack_host + _glance_url + url
+
+
+def create_neutron_url(url):
+    return "http://" + configuration.openstack_host + _neutron_url + url
 
 
 def create_os_url(url):
