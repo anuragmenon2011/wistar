@@ -1484,7 +1484,6 @@ def delete_stack(request, topology_id):
 
     return HttpResponseRedirect('/topologies/' + topology_id + '/')
 
-
 def update_stack(request, topology_id):
     """
         :param request: Django request

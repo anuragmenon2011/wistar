@@ -6,17 +6,14 @@ is_deployed = false;
 is_deployed = true;
 {% endif %}
 
-
-
  function showSnapSetEditor() {
         manuallyTogglePanel('createSnapDet', '');
     }
 
-
 </script>
 <table>
     <tr>
-        <th colspan="4"> Stack Status</th>
+        <th colspan="3"> Stack Status</th>
     </tr>
     {% if stack == None %}
     <tr>
@@ -109,15 +106,17 @@ is_deployed = true;
                     </a>
                 </div>
                 &nbsp;
+
             </td>
         </tr>
         <tr>
-            <td colspan="4">
+            <td colspan="3">
                 <input type="button" name="refreshDSButton" id="refreshDSButton"
                        value="Refresh OpenStack Status"
                        onclick="javascript: refreshDeploymentStatus('{{ topology_id }}');"/>
             </td>
         </tr>
+
 
         <tr>
             <th colspan="4">
@@ -137,5 +136,6 @@ is_deployed = true;
                 </a>
             </td>
         </tr>
+
     {% endif %}
 </table>

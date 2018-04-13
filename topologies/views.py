@@ -617,3 +617,4 @@ def create_snapshot_topo(request):
         logger.debug("Caught Exception in deploy")
         logger.debug(str(e))
         return render(request, 'error.html', {'error': str(e)})
+
