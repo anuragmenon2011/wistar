@@ -5,6 +5,11 @@ is_deployed = false;
 {% else %}
 is_deployed = true;
 {% endif %}
+
+ function showSnapSetEditor() {
+        manuallyTogglePanel('createSnapDet', '');
+    }
+
 </script>
 <table>
     <tr>
@@ -95,6 +100,13 @@ is_deployed = true;
                         title="Show HEAT">&#9881;</a>
                 </div>
                 &nbsp;
+                <div>
+                    <a href="#" onclick="javascript: redir('/ajax/updateStack/{{ topology_id }}')">
+                        Update HEAT
+                    </a>
+                </div>
+                &nbsp;
+
             </td>
         </tr>
         <tr>
@@ -104,5 +116,26 @@ is_deployed = true;
                        onclick="javascript: refreshDeploymentStatus('{{ topology_id }}');"/>
             </td>
         </tr>
+
+
+        <tr>
+            <th colspan="4">
+                HEAT Snapshots
+            </th>
+        </tr>
+        <tr>
+            <td colspan ="2">
+                 <a href="javascript:void(0)" onclick="javascript: showSnapSetEditor();">
+                    Create Snapshots
+                 </a>
+            </td>
+
+            <td colspan="2">
+                <a href="#" onclick="javascript: redir('/ajax/listSnapshot/{{ topology_id }}')">
+                    List Snapshots
+                </a>
+            </td>
+        </tr>
+
     {% endif %}
 </table>

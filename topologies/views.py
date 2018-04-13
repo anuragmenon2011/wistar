@@ -502,3 +502,119 @@ def add_instance_form(request):
                'dhcp_reservations': dhcp_reservations,
                }
     return render(request, 'topologies/overlay/add_instance.html', context)
+
+
+def rebuild_instance(request):
+    logger.info('---------rebuild instance--------')
+    required_fields = set(['instance_name'])
+    if not required_fields.issubset(request.POST):
+        return render(request, 'ajax/overlayError.html', {'error': "Invalid Parameters in POST"})
+
+    instance_name = request.POST['instance_name']
+    topo_id = request.POST['topology_id']
+    try:
+        image_list_linux = list()
+        image_list = Image.objects.all().order_by('name')
+        for i in image_list:
+            if not (i.type.startswith('junos')):
+                image_list_linux.append(i)
+
+        vm_types = configuration.vm_image_types
+        vm_types_string = json.dumps(vm_types)
+        logger.debug(vm_types_string)
+
+        image_list_json = serializers.serialize('json', Image.objects.all(), fields=('name', 'type'))
+        logger.debug(image_list_json)
+
+        search_string = 't%s_%s' % (topo_id, instance_name)
+        logger.debug(search_string)
+        if openstackUtils.connect_to_openstack():
+            server_id = openstackUtils.get_server_details(search_string)
+        context = {'image_list': image_list_linux,
+                   'instance_name': instance_name,
+                   'vm_types': vm_types_string,
+                   'image_list_json': image_list_json,
+                   'server_id': server_id,
+                   'topo_id': topo_id
+                   }
+        return render(request, 'topologies/overlay/rebuild_instance.html', context)
+    except Exception as e:
+        logger.debug("Caught Exception in deploy")
+        logger.debug(str(e))
+        return render(request, 'error.html', {'error': str(e)})
+
+
+def rebuild_server(request):
+    try:
+        logger.debug("Inside the rebuild method")
+        required_fields = set(['topoIconImageSelect', 'topo_id', 'server_id'])
+        if not required_fields.issubset(request.POST):
+            return render(request, 'ajax/overlayError.html', {'error': "Invalid Parameters in POST"})
+        topology_id = request.POST["topo_id"]
+        server_id = request.POST["server_id"]
+        image_string = request.POST["topoIconImageSelect"].split(":")[2]
+        if openstackUtils.connect_to_openstack():
+            image_id = openstackUtils.get_image_id_for_name(image_string)
+
+        logger.debug("Parameters %s %s %s" % (server_id, topology_id, image_id))
+
+        if openstackUtils.connect_to_openstack():
+            res = openstackUtils.rebuild_instance_openstack(server_id, image_id)
+
+        logger.debug("----------------Response----------------")
+
+        if res is None:
+            return render(request, 'error.html', {'error': "Not able to rebuild the server"})
+        else:
+            return HttpResponseRedirect('/topologies/' + topology_id + '/')
+
+    except Exception as e:
+        logger.debug("Caught Exception in deploy")
+        logger.debug(str(e))
+        return render(request, 'error.html', {'error': str(e)})
+
+
+def create_snapshot_topo(request):
+    """
+        :param request: Django request
+        :param topology_id: id of the topology to export
+        :param snap_name: id of the topology to export
+        :return: creates a snapshot of the heat template
+    """
+    try:
+        logger.debug("Inside create Snapshot----------")
+        tenant_id = openstackUtils.get_project_id(configuration.openstack_project)
+        logger.debug("using tenant_id of: %s" % tenant_id)
+        if tenant_id is None:
+            raise Exception("No project found for %s" % configuration.openstack_project)
+        logger.debug(request.POST)
+        required_fields = set(['snap_name', 'snapshot_topo_id'])
+        if not required_fields.issubset(request.POST):
+            return render(request, 'ajax/ajaxError.html', {'error': "Invalid Parameters in POST"})
+
+        topology_id = request.POST["snapshot_topo_id"]
+        snap_name = request.POST["snap_name"]
+        logger.debug("using tenant_id of: %s" % tenant_id)
+        logger.debug("Topology id -------------------: %s" % topology_id)
+        logger.debug("Snap name -------------------: %s" % snap_name)
+
+        try:
+            topology = Topology.objects.get(pk=topology_id)
+        except ObjectDoesNotExist:
+            logger.error('topology id %s was not found!' % topology_id)
+            return render(request, 'error.html', {'error': "Topology not found!"})
+
+        # FIXME - verify all images are in glance before jumping off here!
+        stack_name = topology.name.replace(' ', '_')
+
+        logger.debug("-------------------stack_name--------------------: %s" % stack_name)
+        if openstackUtils.connect_to_openstack():
+            logger.debug(openstackUtils.create_stack_snapshot(stack_name, tenant_id, snap_name))
+
+        return HttpResponseRedirect('/topologies/' + topology_id + '/')
+
+    except Exception as e:
+        logger.debug("Caught Exception in deploy")
+        logger.debug(str(e))
+        return render(request, 'error.html', {'error': str(e)})
+

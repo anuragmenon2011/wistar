@@ -1217,6 +1217,60 @@
         manuallyTogglePanel('configSetCreateRow', 'none');
     }
 
+function submitSnapForm() {
+    var r = confirm("Create Snapshot of the template?");
+
+    if (r == true) {
+
+         jQuery('#createSnapForm').submit();
+        }
+    }
+
+
+function rebuild_instance() {
+
+        var doc = jQuery(document.documentElement);
+        doc.css('cursor', 'progress');
+
+        if ('getName' in s) {
+            instance_name = s.getName();
+
+        } else {
+            console.log('Could not rebuild instance');
+            alert('Could not launch rebuild instance');
+            doc.css('cursor', '');
+        }
+        var url = '/topologies/rebuildInstance/';
+        var params = {
+            'instance_name' : instance_name,
+            'topology_id' : '{{topo_id}}'
+        };
+        var post = jQuery.post(url, params, function(response) {
+            var content = jQuery(response);
+            jQuery('#overlayPanel').empty().append(content);
+            showOverlay('#overlayPanel');
+        });
+        post.fail(function() {
+            alert('Could not perform request!');
+        });
+        post.always(function() {
+            doc.css('cursor', '');
+        });
+    }
+
+
+
+
+
+   function rebuild_server_submit() {
+    var r = confirm("Rebuild the Instance?");
+
+    if (r == true) {
+
+         jQuery('#rebuildServerForm').submit();
+        }
+    }
+
     function showTopoEditor() {
         manuallyTogglePanel('topoEditorForm', '');
         manuallyTogglePanel('topoInfo', 'none');
@@ -2086,6 +2140,11 @@
                         <td>
                             <input type="button" onclick="javascript: proxy_ip();" value="Manage Port Proxies">
                         </td>
+                        {% if global_config.deployment_backend == "openstack" and is_deployed == true %}
+                        <td>
+                            <input type="button" onclick="javascript: rebuild_instance();" value="Rebuild Instance">
+                        </td>
+                        {% endif %}
                     </tr>
                 </table>
             </div>
@@ -2155,6 +2214,11 @@
                         <td>
                             <input type="button" onclick="javascript: proxy_ip();" value="Manage Port Proxies">
                         </td>
+                        {% if global_config.deployment_backend == "openstack" and is_deployed == true %}
+                        <td>
+                            <input type="button" onclick="javascript: rebuild_instance();" value="Rebuild Instance">
+                        </td>
+                        {% endif %}
                     </tr>
                 </table>
             </div>
@@ -2528,6 +2592,46 @@
                 </table>
             </div>
             <div id="deploymentStatus" style="max-height: 455px; overflow-y: auto"></div>
+
+            <div id="createSnap">
+                <form method="post" id="createSnapForm" name="createSnapForm"
+                      action="{% url 'topologies:createSnapshot' %}" method="POST">
+                    <table>
+                        <tbody id="createSnapDet" style="display: none">
+                            <tr>
+                                <th colspan="3">
+                                    Snapshot Details
+                                </th>
+                            </tr>
+                            <tr>
+                                <td>
+                                    Name
+                                </td>
+                                <td colspan="3">
+                                    <input type="text" size="30" maxsize="30" name="snap_name" id="snap_name" value="New Config Set"/>
+                                    <!-- <input type="hidden" id="selectedObject" value="0"> -->
+                                </td>
+                            </tr>
+
+                            <tr>
+                                <td colspan="3">
+                                    <input type="hidden" name="snapshot_topo_id" id="snapshot_topo_id" value="{{ topo.id}}"/>
+                                    <input type="button" name="snapshot_create_button" id="snapshot_create_button"
+                                           value="Create" onclick="javascript: submitSnapForm();"/>
+                                </td>
+                            </tr>
+                        </tbody>
+
+
+                    </table>
+
+                </form>
+            </div>
+
+
+
+
+
             {% if topo_id != None %}
             <div id="automationTools">
                 <table>

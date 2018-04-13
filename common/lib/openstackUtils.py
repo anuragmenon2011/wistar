@@ -863,3 +863,205 @@ def do_delete(url, data=""):
         logger.error("Could not perform DELETE to url: %s" % url)
         logger.error("error was %s" % str(e))
         return None
+
+
+
+
+def create_stack_snapshot(stack_name, tenant_id, snapshot_name):
+    """
+        Creates a snapshot of the Stack via a HEAT REST call
+        :param stack_name: name of the stack to create
+        :param tenant_id: tenant id of the openstack project
+        :param snapshot_name: name of the snapshot
+        :return: JSON response from HEAT-API or None on failure
+    """
+    logger.debug("In create stack snapshot--------------")
+    stack_details = get_stack_details(stack_name)
+    if stack_details is None:
+        return None
+    else:
+        stack_id = str(stack_details["id"])
+
+    #stack_id = get_stack_details(stack_name)
+    create_snapshot_url = create_heat_url("/" + str(tenant_id) + "/stacks/%s/%s/snapshots" % (stack_name, stack_id))
+    data = """{
+            "name": "%s"
+        }""" % snapshot_name
+    logger.debug("Data before posting-----------")
+    logger.debug(data)
+
+    return do_post(create_snapshot_url, data)
+
+
+
+def get_snapshot_list(tenant_id, stack_name, topology_id):
+
+    print("In snapshot list")
+
+    stack_details = get_stack_details(stack_name)
+    if stack_details is None:
+        return None
+    else:
+        stack_id = str(stack_details["id"])
+    snapshot_list_url = create_heat_url('/%s/stacks/%s/%s/snapshots' % (tenant_id, stack_name, stack_id))
+    stack_snapshot_list = do_get(snapshot_list_url)
+    l1 = json.loads(stack_snapshot_list)
+    #l2 = l1['snapshots']
+    snap_list = list()
+
+    for snap in l1["snapshots"]:
+        if snap["status"] == "COMPLETE":
+            snap_detail = get_snap_detail(snap, stack_name, topology_id)
+            snap_list.append(snap_detail)
+    logger.debug(snap_list)
+    return snap_list
+
+def get_snap_detail(snap, stack_name, topology_id):
+
+    logger.debug("Getting snapshot details-------------")
+    logger.debug(snap)
+    snap_list = dict()
+    snap_list["name"] = snap["name"]
+    snap_list["id"] = snap["id"]
+    snap_list["stack_name"] = stack_name
+    snap_list["topology_id"] = str(topology_id)
+
+    return snap_list
+
+def get_server_details(search_string):
+    server_details_url = create_nova_url('/servers?name=%s' % search_string)
+    server_details_json = do_get(server_details_url)
+    server_details_dict = json.loads(server_details_json)
+
+    if server_details_dict is None:
+        return None
+    else:
+        server_details_list = list()
+        server_details_list = server_details_dict['servers']
+        for det in server_details_list:
+            server_details = det['id']
+        logger.debug(server_details)
+        return server_details
+
+
+
+
+def delete_snapshot(tenant_id, stack_name, snapshot_id):
+    """
+    Deletes a stack from OpenStack
+    :param stack_name: name of the stack to be deleted
+    :return: JSON response fro HEAT API
+    """
+    logger.debug("--- delete_stack_snapshot ---")
+
+    stack_details = get_stack_details(stack_name)
+    if stack_details is None:
+        return None
+    else:
+        stack_id = stack_details["id"]
+        url = create_heat_url("/%s/stacks/%s/%s/snapshots/%s" % (tenant_id, stack_name, stack_id, snapshot_id))
+        return do_delete(url)
+
+
+
+def rollback_snapshot(tenant_id, stack_name, snapshot_id):
+    """
+    Deletes a stack from OpenStack
+    :param stack_name: name of the stack to be deleted
+    :return: JSON response fro HEAT API
+    """
+    logger.debug("--- delete_stack_snapshot ---")
+    data = ""
+    stack_details = get_stack_details(stack_name)
+    if stack_details is None:
+        return None
+    else:
+        stack_id = stack_details["id"]
+        url = create_heat_url("/%s/stacks/%s/%s/snapshots/%s/restore" % (tenant_id, stack_name, stack_id, snapshot_id))
+        return do_post(url, data)
+
+
+
+def rebuild_instance_openstack(server_id, image_id):
+    logger.debug("-------Rebuild server openstack")
+    url = create_nova_url("/servers/%s/action" % server_id)
+    data = '''{
+        "rebuild" : {
+            "imageRef" : "%s"
+        }
+    }''' % str(image_id)
+
+    return do_post(url, data)
+
+
+
+
+def update_stack_template(stack_name, template_string):
+
+    """
+    Creates a Stack via a HEAT template
+    :param stack_name: name of the stack to create
+    :param template_string: HEAT template to be used
+    :return: JSON response from HEAT-API or None on failure
+    """
+    logger.debug("--- update_stack ---")
+    stack_details = get_stack_details(stack_name)
+    if stack_details is None:
+        return None
+    else:
+        stack_id = stack_details["id"]
+
+    url = create_heat_url("/" + str(_tenant_id) + "/stacks/%s/%s" % (stack_name, stack_id))
+    logger.debug("URL to update stack")
+    logger.debug(url)
+    data = '''{
+        "disable_rollback": true,
+        "parameters": {},
+        "template": %s
+    }''' % (template_string)
+    logger.debug("updating CREATING stack with data:")
+    logger.debug(data)
+    try:
+        request = urllib2.Request(url)
+        request.add_header("Content-Type", "application/json")
+        request.add_header("charset", "UTF-8")
+        request.add_header("X-Auth-Token", _auth_token)
+        request.get_method = lambda: 'PATCH'
+
+        if data == "":
+            result = urllib2.urlopen(request)
+        else:
+            result = urllib2.urlopen(request, data)
+
+        return result.read()
+    except URLError as e:
+        logger.error("Could not perform PUT to url: %s" % url)
+        logger.error("error was %s" % str(e))
+        return None
+    #return do_post(url, data)
+
+
+def get_stack_ports(stack_name, tenant_id):
+    stack_details = get_stack_details(stack_name)
+
+    if stack_details is None:
+        return None
+    else:
+        stack_id = str(stack_details["id"])
+
+    try:
+        get_port_url = create_heat_url( '/%s/stacks/%s/%s/resources?type=OS::Neutron::Port' % (tenant_id, stack_name, stack_id))
+        resources = do_get(get_port_url)
+        resource_dict = json.loads(resources)
+        resource_list = resource_dict['resources']
+        print(resource_list)
+        port_list = list()
+        for port in resource_list:
+            port_list.append(port['resource_name'])
+        print(port_list)
+        return port_list
+
+    except URLError as e:
+        logger.error("Could not perform PUT to url: %s" % url)
+        logger.error("error was %s" % str(e))
+        return None

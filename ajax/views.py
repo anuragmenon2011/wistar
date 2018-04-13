@@ -1183,7 +1183,6 @@ def get_topology_config(request):
         This is useful to get a list of all objects on the topolgy,
         filter for objects of a specific type, and verify their boot up state.
         i.e. to run a command against all Junos devices for example
-
     """
     if 'topologyId' not in request.POST:
         return render(request, 'ajax/ajaxError.html', {'error': "No Topology Id in request"})
@@ -1208,7 +1207,6 @@ def get_topology_config(request):
 def execute_linux_automation(request):
     """
        execute cli command on all linux instances in topology
-
     """
     if 'topologyId' not in request.POST:
         return render(request, 'ajax/ajaxError.html', {'error': "No Topology Id in request"})
@@ -1253,7 +1251,6 @@ def execute_linux_automation(request):
 def execute_junos_automation(request):
     """
        execute cli command on all junos instances in topology
-
     """
     if 'topologyId' not in request.POST:
         return render(request, 'ajax/ajaxError.html', {'error': "No Topology Id in request"})
@@ -1486,3 +1483,158 @@ def delete_stack(request, topology_id):
         logger.debug(openstackUtils.delete_stack(stack_name))
 
     return HttpResponseRedirect('/topologies/' + topology_id + '/')
+
+def update_stack(request, topology_id):
+    """
+        :param request: Django request
+        :param topology_id: id of the topology to export
+        :return: renders the updated heat template
+    """
+    logger.debug("-----Inside update stack-----")
+    try:
+        topology = Topology.objects.get(pk=topology_id)
+    except ObjectDoesNotExist:
+        return render(request, 'error.html', {'error': "Topology not found!"})
+    try:
+        # let's parse the json and convert to simple lists and dicts
+        logger.debug("loading config")
+        config = wistarUtils.load_config_from_topology_json(topology.json, topology_id)
+        logger.debug("Config is loaded")
+
+        # get the tenant_id of the desired project
+        tenant_id = openstackUtils.get_project_id(configuration.openstack_project)
+        logger.debug("using tenant_id of: %s" % tenant_id)
+        if tenant_id is None:
+            raise Exception("No project found for %s" % configuration.openstack_project)
+
+        # FIXME - verify all images are in glance before jumping off here!
+        stack_name = topology.name.replace(' ', '_')
+
+        port_list = openstackUtils.get_stack_ports(stack_name, tenant_id)
+        print(port_list)
+        heat_template = wistarUtils.get_heat_json_from_topology_config_for_update(config, port_list)
+        logger.debug("heat template created---test1")
+        logger.debug(heat_template)
+
+        logger.debug(openstackUtils.update_stack_template(stack_name, heat_template))
+
+        return HttpResponseRedirect('/topologies/' + topology_id + '/')
+
+    except Exception as e:
+        logger.debug("Caught Exception in deploy")
+        logger.debug(str(e))
+        return render(request, 'error.html', {'error': str(e)})
+
+
+def list_snapshot(request, topology_id):
+    """
+        :param request: Django request
+        :param topology_id: id of the topology to export
+        :return: creates a snapshot of the heat template
+    """
+    try:
+        logger.debug("Inside create Snapshot----------")
+        tenant_id = openstackUtils.get_project_id(configuration.openstack_project)
+        logger.debug("using tenant_id of: %s" % tenant_id)
+        if tenant_id is None:
+            raise Exception("No project found for %s" % configuration.openstack_project)
+
+        logger.debug("Topology id -------------------: %s" % topology_id)
+
+        try:
+            topology = Topology.objects.get(pk=topology_id)
+        except ObjectDoesNotExist:
+            logger.error('topology id %s was not found!' % topology_id)
+            return render(request, 'error.html', {'error': "Topology not found!"})
+
+        # FIXME - verify all images are in glance before jumping off here!
+        stack_name = topology.name.replace(' ', '_')
+        snapshot_list = list()
+        logger.debug("-------------------stack_name--------------------: %s" % stack_name)
+        if openstackUtils.connect_to_openstack():
+            snapshot_list = openstackUtils.get_snapshot_list(tenant_id, stack_name, topology_id)
+
+        context = {'snapshot_list': snapshot_list}
+        logger.debug("Before rendering-----------")
+        return render(request, 'ajax/snapshot_list.html', context)
+
+    except Exception as e:
+        logger.debug("Caught Exception in deploy")
+        logger.debug(str(e))
+        return render(request, 'error.html', {'error': str(e)})
+
+
+def rollback_snapshot(request, snapshot_id, topology_id):
+    """
+        :param request: Django request
+        :param topology_id: id of the topology to export
+        :return: creates a snapshot of the heat template
+    """
+
+    try:
+        logger.debug("Inside rollback Snapshot----------")
+        tenant_id = openstackUtils.get_project_id(configuration.openstack_project)
+        logger.debug("using tenant_id of: %s" % tenant_id)
+        if tenant_id is None:
+            raise Exception("No project found for %s" % configuration.openstack_project)
+
+        logger.debug("Topology id -------------------: %s" % topology_id)
+
+        try:
+            topology = Topology.objects.get(pk=topology_id)
+        except ObjectDoesNotExist:
+            logger.error('topology id %s was not found!' % topology_id)
+            return render(request, 'error.html', {'error': "Topology not found!"})
+
+        # FIXME - verify all images are in glance before jumping off here!
+        stack_name = topology.name.replace(' ', '_')
+        logger.debug("Stack name: %s" % stack_name)
+        logger.debug("Snapshot id: %s" % snapshot_id)
+
+        if openstackUtils.connect_to_openstack():
+            logger.debug(openstackUtils.rollback_snapshot(tenant_id, stack_name, snapshot_id))
+
+        return HttpResponseRedirect('/topologies/' + topology_id + '/')
+
+    except Exception as e:
+        logger.debug("Caught Exception in deploy")
+        logger.debug(str(e))
+        return render(request, 'error.html', {'error': str(e)})
+
+
+def delete_snapshot(request, snapshot_id, topology_id):
+    """
+        :param request: Django request
+        :param topology_id: id of the topology to export
+        :return: creates a snapshot of the heat template
+    """
+
+    try:
+        logger.debug("Inside rollback Snapshot----------")
+        tenant_id = openstackUtils.get_project_id(configuration.openstack_project)
+        logger.debug("using tenant_id of: %s" % tenant_id)
+        if tenant_id is None:
+            raise Exception("No project found for %s" % configuration.openstack_project)
+
+        logger.debug("Topology id -------------------: %s" % topology_id)
+
+        try:
+            topology = Topology.objects.get(pk=topology_id)
+        except ObjectDoesNotExist:
+            logger.error('topology id %s was not found!' % topology_id)
+            return render(request, 'error.html', {'error': "Topology not found!"})
+
+        # FIXME - verify all images are in glance before jumping off here!
+        stack_name = topology.name.replace(' ', '_')
+        logger.debug("Stack name: %s" % stack_name)
+        logger.debug("Snapshot id: %s" % snapshot_id)
+
+        if openstackUtils.connect_to_openstack():
+            logger.debug(openstackUtils.delete_snapshot(tenant_id, stack_name, snapshot_id))
+
+        return HttpResponseRedirect('/topologies/' + topology_id + '/')
+
+    except Exception as e:
+        logger.debug("Caught Exception in deploy")
+        logger.debug(str(e))
+        return render(request, 'error.html', {'error': str(e)})
