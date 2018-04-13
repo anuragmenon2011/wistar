@@ -45,8 +45,6 @@ urlpatterns = [
     url(r'^deployStack/(?P<topology_id>[^/]+)$', views.deploy_stack, name='deployStack'),
     url(r'^updateStack/(?P<topology_id>[^/]+)$', views.update_stack, name='updateStack'),
     url(r'^deleteStack/(?P<topology_id>[^/]+)$', views.delete_stack, name='deleteStack'),
-    #url(r'^createSnapshot/(?P<topology_id>[^/]+)$', views.create_snapshot, name='createSnapshot'),
-    #url(r'^createSnapshot/$', views.create_snapshot, name='createSnapshot'),
     url(r'^listSnapshot/(?P<topology_id>[^/]+)$', views.list_snapshot, name='listSnapshot'),
     url(r'^deleteSnapshot/(?P<snapshot_id>[^/]+)/(?P<topology_id>[^/]+)/$', views.delete_snapshot,
         name='deleteSnapshot'),

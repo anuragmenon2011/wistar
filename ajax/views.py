@@ -35,7 +35,6 @@ from common.lib import libvirtUtils
 from common.lib import linuxUtils
 from common.lib import openstackUtils
 from common.lib import osUtils
-from common.lib import vboxUtils
 from common.lib import wistarUtils
 from common.lib.WistarException import WistarException
 from images.models import Image
@@ -261,23 +260,26 @@ def get_junos_startup_state(request):
         return render(request, 'ajax/ajaxError.html', {'error': "Invalid Parameters in POST"})
 
     name = request.POST['name']
+
+    # always check network if possible regardless of deployment_backend
+    if "ip" in request.POST:
+        # this instance is auto-configured, so we can just check for IP here
+        response_data["network"] = osUtils.check_ip(request.POST["ip"])
+
     if configuration.deployment_backend == "kvm" and libvirtUtils.is_domain_running(name):
         # topologies/edit will fire multiple calls at once
         # let's just put a bit of a breather between each one
         response_data["power"] = True
-        if "ip" in request.POST:
-            # this instance is auto-configured, so we can just check for IP here
-            response_data["network"] = osUtils.check_ip(request.POST["ip"])
-        else:
+        if "ip" not in request.POST:
             time.sleep(random.randint(0, 10) * .10)
-
             response_data["console"] = consoleUtils.is_junos_device_at_prompt(name)
 
     elif configuration.deployment_backend == "openstack":
 
         time.sleep(random.randint(0, 20) * .10)
         response_data["power"] = True
-        response_data["console"] = consoleUtils.is_junos_device_at_prompt(name)
+        # console no longer supported in openstack deployments
+        response_data["console"] = False
 
     return HttpResponse(json.dumps(response_data), content_type="application/json")
 
@@ -293,20 +295,24 @@ def get_linux_startup_state(request):
         return render(request, 'ajax/ajaxError.html', {'error': "Invalid Parameters in POST"})
 
     name = request.POST['name']
+    # always check network if possible regardless of deployment_backend
+    if "ip" in request.POST:
+        # this instance is auto-configured, so we can just check for IP here
+        response_data["network"] = osUtils.check_ip(request.POST["ip"])
 
     if configuration.deployment_backend == "openstack":
         if openstackUtils.connect_to_openstack():
             time.sleep(random.randint(0, 10) * .10)
             response_data["power"] = True
-            response_data["console"] = consoleUtils.is_linux_device_at_prompt(name)
+            # as of 2018-01-01 we no longer support openstack console, this is dead code
+            # response_data["console"] = consoleUtils.is_linux_device_at_prompt(name)
+            response_data['console'] = False
     else:
         if libvirtUtils.is_domain_running(name):
             time.sleep(random.randint(0, 10) * .10)
             response_data["power"] = True
-            if "ip" in request.POST:
-                # this instance is auto-configured, so we can just check for IP here
-                response_data["network"] = osUtils.check_ip(request.POST["ip"])
-            else:
+            # let's check the console only if we do not have network available to check
+            if "ip" not in request.POST:
                 response_data["console"] = consoleUtils.is_linux_device_at_prompt(name)
 
     return HttpResponse(json.dumps(response_data), content_type="application/json")
@@ -577,11 +583,17 @@ def refresh_openstack_deployment_status(request, topology_id):
     stack_details = openstackUtils.get_stack_details(stack_name)
     stack_resources = dict()
     logger.debug(stack_details)
-    if stack_details is not None and stack_details["stack_status"] == "CREATE_COMPLETE":
+    if stack_details is not None and 'stack_status' in stack_details and 'COMPLETE' in stack_details["stack_status"]:
         stack_resources = openstackUtils.get_stack_resources(stack_name, stack_details["id"])
+
+    if hasattr(configuration, 'openstack_horizon_url'):
+        horizon_url = configuration.openstack_horizon_url
+    else:
+        horizon_url = 'http://' + configuration.openstack_host + '/dashboard'
 
     context = {"stack": stack_details, "topology_id": topology.id,
                "openstack_host": configuration.openstack_host,
+               "openstack_horizon_url": horizon_url,
                "stack_resources": stack_resources
                }
     return render(request, 'ajax/openstackDeploymentStatus.html', context)
@@ -628,7 +640,7 @@ def get_available_ip(request):
     # IP addresses. This makes the attempt to use 'old' ips that
     # are at least not still in use.
     logger.info("getting ips that are currently reserved via DHCP")
-    all_used_ips = wistarUtils.get_dhcp_reserved_ips()
+    all_used_ips = wistarUtils.get_consumed_management_ips()
     logger.debug(all_used_ips)
     next_ip = wistarUtils.get_next_ip(all_used_ips, 2)
     logger.debug(next_ip)
@@ -1015,8 +1027,15 @@ def inline_deploy_topology(config):
             if device["cloudInitSupport"]:
                 # grab the last interface
                 management_interface = device["managementInterface"]
-                # this will come back to haunt me one day. Assume /24 for mgmt network is sprinkled everywhere!
-                management_ip = device["ip"] + "/24"
+
+                # grab the prefix len from the management subnet which is in the form 192.168.122.0/24
+                if '/' in configuration.management_subnet:
+                    management_prefix_len = configuration.management_subnet.split('/')[1]
+                else:
+                    management_prefix_len = '24'
+
+                management_ip = device['ip'] + '/' + management_prefix_len
+
                 # domain_name, host_name, mgmt_ip, mgmt_interface
                 script_string = ""
                 script_param = ""
@@ -1164,7 +1183,6 @@ def get_topology_config(request):
         This is useful to get a list of all objects on the topolgy,
         filter for objects of a specific type, and verify their boot up state.
         i.e. to run a command against all Junos devices for example
-
     """
     if 'topologyId' not in request.POST:
         return render(request, 'ajax/ajaxError.html', {'error': "No Topology Id in request"})
@@ -1189,7 +1207,6 @@ def get_topology_config(request):
 def execute_linux_automation(request):
     """
        execute cli command on all linux instances in topology
-
     """
     if 'topologyId' not in request.POST:
         return render(request, 'ajax/ajaxError.html', {'error': "No Topology Id in request"})
@@ -1234,7 +1251,6 @@ def execute_linux_automation(request):
 def execute_junos_automation(request):
     """
        execute cli command on all junos instances in topology
-
     """
     if 'topologyId' not in request.POST:
         return render(request, 'ajax/ajaxError.html', {'error': "No Topology Id in request"})
@@ -1419,11 +1435,15 @@ def deploy_stack(request, topology_id):
         return render(request, 'error.html', {'error': "Topology not found!"})
 
     try:
+        # generate a stack name
+        # FIXME should add a check to verify this is a unique name
+        stack_name = topology.name.replace(' ', '_')
+
         # let's parse the json and convert to simple lists and dicts
         logger.debug("loading config")
         config = wistarUtils.load_config_from_topology_json(topology.json, topology_id)
         logger.debug("Config is loaded")
-        heat_template = wistarUtils.get_heat_json_from_topology_config(config)
+        heat_template = wistarUtils.get_heat_json_from_topology_config(config, stack_name)
         logger.debug("heat template created")
         if not openstackUtils.connect_to_openstack():
             return render(request, 'error.html', {'error': "Could not connect to Openstack"})
@@ -1435,7 +1455,7 @@ def deploy_stack(request, topology_id):
             raise Exception("No project found for %s" % configuration.openstack_project)
 
         # FIXME - verify all images are in glance before jumping off here!
-        stack_name = topology.name.replace(' ', '_')
+
         logger.debug(openstackUtils.create_stack(stack_name, heat_template))
 
         return HttpResponseRedirect('/topologies/' + topology_id + '/')
@@ -1464,6 +1484,7 @@ def delete_stack(request, topology_id):
 
     return HttpResponseRedirect('/topologies/' + topology_id + '/')
 
+
 def update_stack(request, topology_id):
     """
         :param request: Django request
@@ -1480,7 +1501,7 @@ def update_stack(request, topology_id):
         logger.debug("loading config")
         config = wistarUtils.load_config_from_topology_json(topology.json, topology_id)
         logger.debug("Config is loaded")
-        
+
         # get the tenant_id of the desired project
         tenant_id = openstackUtils.get_project_id(configuration.openstack_project)
         logger.debug("using tenant_id of: %s" % tenant_id)
@@ -1489,13 +1510,13 @@ def update_stack(request, topology_id):
 
         # FIXME - verify all images are in glance before jumping off here!
         stack_name = topology.name.replace(' ', '_')
-        
+
         port_list = openstackUtils.get_stack_ports(stack_name, tenant_id)
         print(port_list)
         heat_template = wistarUtils.get_heat_json_from_topology_config_for_update(config, port_list)
         logger.debug("heat template created---test1")
         logger.debug(heat_template)
-            
+
         logger.debug(openstackUtils.update_stack_template(stack_name, heat_template))
 
         return HttpResponseRedirect('/topologies/' + topology_id + '/')
@@ -1504,7 +1525,6 @@ def update_stack(request, topology_id):
         logger.debug("Caught Exception in deploy")
         logger.debug(str(e))
         return render(request, 'error.html', {'error': str(e)})
-
 
 
 def list_snapshot(request, topology_id):
@@ -1521,7 +1541,6 @@ def list_snapshot(request, topology_id):
             raise Exception("No project found for %s" % configuration.openstack_project)
 
         logger.debug("Topology id -------------------: %s" % topology_id)
-
 
         try:
             topology = Topology.objects.get(pk=topology_id)
@@ -1584,12 +1603,6 @@ def rollback_snapshot(request, snapshot_id, topology_id):
         return render(request, 'error.html', {'error': str(e)})
 
 
-
-
-
-
-
-
 def delete_snapshot(request, snapshot_id, topology_id):
     """
         :param request: Django request
@@ -1606,7 +1619,6 @@ def delete_snapshot(request, snapshot_id, topology_id):
 
         logger.debug("Topology id -------------------: %s" % topology_id)
 
-
         try:
             topology = Topology.objects.get(pk=topology_id)
         except ObjectDoesNotExist:
@@ -1622,7 +1634,7 @@ def delete_snapshot(request, snapshot_id, topology_id):
             logger.debug(openstackUtils.delete_snapshot(tenant_id, stack_name, snapshot_id))
 
         return HttpResponseRedirect('/topologies/' + topology_id + '/')
-    
+
     except Exception as e:
         logger.debug("Caught Exception in deploy")
         logger.debug(str(e))

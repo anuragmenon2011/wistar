@@ -33,6 +33,7 @@ from ajax import views as av
 from common.lib import junosUtils
 from common.lib import libvirtUtils
 from common.lib import osUtils
+from common.lib import ovsUtils
 from common.lib import wistarUtils
 from common.lib import openstackUtils
 
@@ -67,19 +68,22 @@ def edit(request):
 
 def new(request):
     logger.debug('---- topology new ----')
-    image_list = Image.objects.all().order_by('name')
+
     script_list = Script.objects.all().order_by('name')
     vm_types = configuration.vm_image_types
     vm_types_string = json.dumps(vm_types)
-    image_list_json = serializers.serialize('json', Image.objects.all(), fields=('name', 'type'))
 
     currently_allocated_ips = wistarUtils.get_used_ips()
-    dhcp_reservations = wistarUtils.get_dhcp_reserved_ips()
+    dhcp_reservations = wistarUtils.get_consumed_management_ips()
 
     if configuration.deployment_backend == "openstack":
         external_bridge = configuration.openstack_external_network
+        image_list = Image.objects.filter(filePath='').order_by('name')
     else:
         external_bridge = configuration.kvm_external_bridge
+        image_list = Image.objects.exclude(filePath='').order_by('name')
+
+    image_list_json = serializers.serialize('json', image_list, fields=('name', 'type'))
 
     context = {'image_list': image_list, 'script_list': script_list, 'vm_types': vm_types_string,
                'image_list_json': image_list_json,
@@ -126,7 +130,7 @@ def import_topology(request):
             logger.debug("Iterating json objects in imported data")
             for json_object in json_data:
                 if "userData" in json_object and "wistarVm" in json_object["userData"]:
-                    logger.debug("Found one")
+                    # logger.debug("Found one")
                     ud = json_object["userData"]
                     # check if we have this type of image
                     image_list = Image.objects.filter(type=ud["type"])
@@ -137,7 +141,7 @@ def import_topology(request):
                                      '! Please upload an image of this type and try again')
 
                     image = image_list[0]
-                    logger.debug(str(image.id))
+                    # logger.debug(str(image.id))
                     json_object["userData"]["image"] = image.id
 
                     valid_ip = wistarUtils.get_next_ip(currently_allocated_ips, next_ip_floor)
@@ -157,11 +161,14 @@ def import_topology(request):
             vm_types = configuration.vm_image_types
             vm_types_string = json.dumps(vm_types)
 
+            dhcp_reservations = wistarUtils.get_consumed_management_ips()
+
             context = {'image_list': image_list,
                        'image_list_json': image_list_json,
                        'allocated_ips': currently_allocated_ips,
                        'script_list': script_list,
                        'vm_types': vm_types_string,
+                       'dhcp_reservations': dhcp_reservations,
                        'topo': topology
                        }
 
@@ -195,7 +202,7 @@ def clone(request, topo_id):
     currently_allocated_ips = wistarUtils.get_used_ips()
     cloned_ips = wistarUtils.get_used_ips_from_topology_json(topology.json)
 
-    dhcp_reservations = wistarUtils.get_dhcp_reserved_ips()
+    dhcp_reservations = wistarUtils.get_consumed_management_ips()
 
     currently_allocated_ips += cloned_ips
 
@@ -273,10 +280,18 @@ def delete(request, topology_id):
 
     if configuration.deployment_backend == "kvm":
 
+        if hasattr(configuration, "use_openvswitch") and configuration.use_openvswitch:
+            use_ovs = True
+        else:
+            use_ovs = False
+
         network_list = libvirtUtils.get_networks_for_topology(topology_prefix)
         for network in network_list:
             logger.debug("undefine network: " + network["name"])
             libvirtUtils.undefine_network(network["name"])
+
+            if use_ovs:
+                ovsUtils.delete_bridge(network["name"])
 
         domain_list = libvirtUtils.get_domains_for_topology(topology_prefix)
         for domain in domain_list:
@@ -471,7 +486,7 @@ def add_instance_form(request):
     image_list_json = serializers.serialize('json', Image.objects.all(), fields=('name', 'type'))
 
     currently_allocated_ips = wistarUtils.get_used_ips()
-    dhcp_reservations = wistarUtils.get_dhcp_reserved_ips()
+    dhcp_reservations = wistarUtils.get_consumed_management_ips()
 
     if configuration.deployment_backend == "openstack":
         external_bridge = configuration.openstack_external_network
@@ -502,7 +517,6 @@ def rebuild_instance(request):
         image_list = Image.objects.all().order_by('name')
         for i in image_list:
             if not (i.type.startswith('junos')):
-
                 image_list_linux.append(i)
 
         vm_types = configuration.vm_image_types
@@ -531,7 +545,6 @@ def rebuild_instance(request):
 
 
 def rebuild_server(request):
-
     try:
         logger.debug("Inside the rebuild method")
         required_fields = set(['topoIconImageSelect', 'topo_id', 'server_id'])
@@ -561,11 +574,7 @@ def rebuild_server(request):
         return render(request, 'error.html', {'error': str(e)})
 
 
-
-
 def create_snapshot_topo(request):
-    
-
     """
         :param request: Django request
         :param topology_id: id of the topology to export
@@ -597,7 +606,7 @@ def create_snapshot_topo(request):
 
         # FIXME - verify all images are in glance before jumping off here!
         stack_name = topology.name.replace(' ', '_')
-        
+
         logger.debug("-------------------stack_name--------------------: %s" % stack_name)
         if openstackUtils.connect_to_openstack():
             logger.debug(openstackUtils.create_stack_snapshot(stack_name, tenant_id, snap_name))
