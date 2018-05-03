@@ -17,7 +17,7 @@ is_deployed = true;
     </tr>
     {% if stack == None %}
     <tr>
-        <td>
+        <td colspan="3">
             Not yet deployed to OpenStack!
         </td>
     </tr>
@@ -37,7 +37,7 @@ is_deployed = true;
             <td>
                 Status
             </td>
-            <td>
+            <td colspan="2">
                 {{ stack.stack_status }}
             </td>
         </tr>
@@ -45,7 +45,7 @@ is_deployed = true;
             <td>
                 Status Detail
             </td>
-            <td>
+            <td colspan="2">
                 {{ stack.stack_status_reason }}
             </td>
         </tr>
@@ -100,13 +100,6 @@ is_deployed = true;
                         title="Show HEAT">&#9881;</a>
                 </div>
                 &nbsp;
-                <div>
-                    <a href="#" onclick="javascript: redir('/ajax/updateStack/{{ topology_id }}')">
-                        Update HEAT
-                    </a>
-                </div>
-                &nbsp;
-
             </td>
         </tr>
         <tr>
@@ -119,18 +112,16 @@ is_deployed = true;
 
 
         <tr>
-            <th colspan="4">
+            <th colspan="3">
                 HEAT Snapshots
             </th>
         </tr>
         <tr>
-            <td colspan ="2">
+            <td colspan ="3">
                  <a href="javascript:void(0)" onclick="javascript: showSnapSetEditor();">
                     Create Snapshots
                  </a>
-            </td>
-
-            <td colspan="2">
+                  &nbsp;
                 <a href="#" onclick="javascript: redir('/ajax/listSnapshot/{{ topology_id }}')">
                     List Snapshots
                 </a>

@@ -861,26 +861,11 @@ def multi_clone_topology(request):
 
 
 def redeploy_topology(request):
-    logger.debug('=============================================================================================================================')
-    logger.debug('=============================================================================================================================')
-    logger.debug('=============================================================================================================================')
-    logger.debug('=============================================================================================================================')
-    logger.debug('=============================================================================================================================')
-    logger.debug('=============================================================================================================================')
-    logger.debug('=============================================================================================================================')
-    logger.debug('=============================================================================================================================')
-    logger.debug('=============================================================================================================================')
     required_fields = set(['json', 'topologyId'])
     if not required_fields.issubset(request.POST):
         return render(request, 'ajax/ajaxError.html', {'error': "No Topology Id in request"})
 
     topology_id = request.POST['topologyId']
-    logger.debug('HERE')
-    if configuration.deployment_backend == "openstack":
-        logger.info('Redirecting to update stack')
-        return HttpResponseRedirect('/ajax/updateStack/' + topology_id)
-
-    logger.debug('STILL HERE')
     j = request.POST['json']
     try:
         topo = Topology.objects.get(pk=topology_id)
@@ -888,6 +873,10 @@ def redeploy_topology(request):
         topo.save()
     except ObjectDoesNotExist:
         return render(request, 'ajax/ajaxError.html', {'error': "Topology doesn't exist"})
+
+    if configuration.deployment_backend == "openstack":
+        logger.info('Redirecting to update stack')
+        return update_stack(request)
 
     try:
         domains = libvirtUtils.get_domains_for_topology(topology_id)
@@ -1499,12 +1488,19 @@ def delete_stack(request, topology_id):
 
     return HttpResponseRedirect('/topologies/' + topology_id + '/')
 
-def update_stack(request, topology_id):
+
+def update_stack(request):
     """
         :param request: Django request
         :param topology_id: id of the topology to export
         :return: renders the updated heat template
     """
+    required_fields = set(['topologyId'])
+    if not required_fields.issubset(request.POST):
+        return render(request, 'ajax/ajaxError.html', {'error': "Invalid Parameters in POST"})
+
+    topology_id = request.POST['topologyId']
+
     logger.debug("-----Inside update stack-----")
     try:
         topology = Topology.objects.get(pk=topology_id)
@@ -1532,8 +1528,7 @@ def update_stack(request, topology_id):
         logger.debug(heat_template)
 
         logger.debug(openstackUtils.update_stack_template(stack_name, heat_template))
-
-        return HttpResponseRedirect('/topologies/' + topology_id + '/')
+        return refresh_deployment_status(request)
 
     except Exception as e:
         logger.debug("Caught Exception in deploy")

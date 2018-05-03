@@ -2117,7 +2117,7 @@ function rebuild_instance() {
                     </tr>
                 </table>
                 <table>
-                    <th colspan="3">
+                    <th>
                         Instance Tools
                     </th>
                     <tr>
@@ -2125,26 +2125,18 @@ function rebuild_instance() {
                             <input type="button" onclick="javascript: getInstanceStartupState();"
                                    value="Refresh Boot State"
                                    title="Determines if the instance is fully booted and ready">
-                            <br/>
-                        </td>
-                        <td>
-                            <input type="button" onclick="javascript: configureInstanceAccess();"
-                                   value="Configure Access" title="Configures Management IP Address">
-                            <br/>
-                            <br/>
+                            &nbsp;
                             <input type="button" onclick="javascript: loadScriptSelector();"
                                    value="Execute Script" title="Execute Script on instance">
-                            <br/>
-                            <br/>
-                        </td>
-                        <td>
-                            <input type="button" onclick="javascript: proxy_ip();" value="Manage Port Proxies">
-                        </td>
+                            &nbsp;
+                            <input type="button" onclick="javascript: proxy_ip();" value="Port Proxy"
+                                   title="Manage Port Forwarding and Proxies">
+                            &nbsp;
                         {% if global_config.deployment_backend == "openstack" and is_deployed == true %}
-                        <td>
-                            <input type="button" onclick="javascript: rebuild_instance();" value="Rebuild Instance">
-                        </td>
+                            <input type="button" onclick="javascript: rebuild_instance();" value="Rebuild"
+                                   title="Rebuild Instance In openstack">
                         {% endif %}
+                        </td>
                     </tr>
                 </table>
             </div>
