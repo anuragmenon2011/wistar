@@ -406,10 +406,14 @@ def get_heat_json_from_topology_config_for_update(config, port_list):
         for p in device["interfaces"]:
             port = dict()
             port["port"] = dict()
-            if device["name"] + "_port" + str(index) in port_list:
-                port["port"]["get_resource"] = device["name"] + "_port" + str(index) + "_nora"
-            else:
+
+            if index == 0:
                 port["port"]["get_resource"] = device["name"] + "_port" + str(index)
+            else:
+                if device["name"] + "_port" + str(index) in port_list:
+                    port["port"]["get_resource"] = device["name"] + "_port" + str(index) + "_nora"
+                else:
+                    port["port"]["get_resource"] = device["name"] + "_port" + str(index)
             index += 1
             dr["properties"]["networks"].append(port)
 
@@ -523,19 +527,22 @@ def get_heat_json_from_topology_config_for_update(config, port_list):
                 # disable port security on all other ports (in case this isn't set globally)
                 p['port_security_enabled'] = False
 
-            if device["name"] + "_port" + str(index) in port_list:
-                p["name"] = device["name"] + "_port" + str(index) + "_nora"
-            else:
+            if index == 0:
                 p["name"] = device["name"] + "_port" + str(index)
-
+            else:
+                if device["name"] + "_port" + str(index) in port_list:
+                    p["name"] = device["name"] + "_port" + str(index) + "_nora"
+                else:
+                    p["name"] = device["name"] + "_port" + str(index)
 
             pr["properties"] = p
-            if device["name"] + "_port" + str(index) in port_list:
-                template["resources"][device["name"] + "_port" + str(index) + "_nora"] = pr
-            else:
+            if index == 0:
                 template["resources"][device["name"] + "_port" + str(index)] = pr
-
-
+            else:
+                if device["name"] + "_port" + str(index) in port_list:
+                    template["resources"][device["name"] + "_port" + str(index) + "_nora"] = pr
+                else:
+                    template["resources"][device["name"] + "_port" + str(index)] = pr
             index += 1
 
     return json.dumps(template)
